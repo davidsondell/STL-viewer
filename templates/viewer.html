@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Model Viewer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    html, body { margin: 0; padding: 0; height: 100vh; width: 100vw; background: #1e1e2f; box-sizing: border-box; overflow: hidden;}
+    .container { display: flex; height: 100vh; width: 100vw; background: #1e1e2f; color: #ddd; overflow: hidden;}
+    .sidebar { width: 350px; min-width: 350px; padding: 20px; box-sizing: border-box; background: #27293d; overflow-y: auto; height: 100vh; display: flex; flex-direction: column;}
+    .sidebar h2 { margin: 0 0 12px 0; font-size: 18px;}
+    .section { margin-bottom: 24px;}
+    .section h3 { margin: 0 0 8px 0; color: #bbb; font-weight: 600; font-size: 14px;}
+    .btn { display: block; width: 100%; padding: 10px; margin: 6px 0; background: #3b3f5a; border: none; border-radius: 5px; color: #ddd; text-align: left; cursor: pointer; font-size: 14px; transition: background-color 0.25s ease;}
+    .btn.active { background: #5c6cef; color: #fff;}
+    button.btn:hover { background: #565c82;}
+    #result { font-size: 13px; margin-top: 12px; font-style: italic; color: #bbb; user-select: none;}
+    #viewer { flex: 1; position: relative; overflow: hidden; height: 100vh; background: #1e1e2f;}
+    canvas { position: absolute; top: 0; left: 0; right: 0; bottom: 0; width: 100% !important; height: 100% !important; background: #1e1e2f; border: none; display: block;}
+    #measurement-list .highlighted { background: #4753c8; color: #fff; border-radius: 5px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="sidebar">
+      <h2>3D Model Viewer</h2>
+      <div class="section">
+        <h3>View Options</h3>
+        <button id="bbox-btn" class="btn">Bounding Box</button>
+        <button id="wireframe-btn" class="btn">Wireframe</button>
+        <button id="colormap-btn" class="btn">Color by Height</button>
+        <label for="slice-range">Slice Plane</label>
+        <input id="slice-range" type="range" min="-50" max="50" value="0" />
+      </div>
+      <div class="section">
+        <h3>Measure Tools</h3>
+        <button id="measure-btn" class="btn">Distance</button>
+        <button id="angle-btn" class="btn">Angle</button>
+        <div id="result">Ready</div>
+      </div>
+      <div class="section">
+        <h3>Measurements</h3>
+        <div id="measurement-list" style="max-height:200px; overflow-y:auto; font-size:13px; color:#bbb; user-select:none;"></div>
+        <button id="clear-measurements" class="btn" style="margin-top:10px;">Clear All</button>
+      </div>
+    </div>
+    <div id="viewer"></div>
+  </div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.149.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+    import {
+      Vector3, Box3, BoxHelper, Raycaster, Vector2,
+      Line, BufferGeometry, LineBasicMaterial,
+      SphereGeometry, MeshBasicMaterial, Mesh, Plane,
+      MeshStandardMaterial, Float32BufferAttribute
+    } from 'three';
+
+    const container = document.getElementById('viewer');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1e1e2f);
+    const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 10000);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    container.appendChild(renderer.domElement);
+
+    function resizeRenderer() {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+    resizeRenderer();
+    window.addEventListener('resize', resizeRenderer);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    scene.add(new THREE.AmbientLight(0x666666));
+    const dl1 = new THREE.DirectionalLight(0xffffff, 1);
+    dl1.position.set(1, 1, 1);
+    scene.add(dl1);
+    const dl2 = new THREE.DirectionalLight(0xffffff, 0.5);
+    dl2.position.set(-1, -1, -1);
+    scene.add(dl2);
+    scene.add(new THREE.AxesHelper(50));
+
+    let mesh, meshDefaultMaterial, meshDefaultColors = null, colorByHeightOn = false;
+    let boxHelper = null;
+    const clipPlane = new Plane(new Vector3(0, -1, 0), 0);
+    const raycaster = new Raycaster();
+    const mouse = new Vector2();
+    let distanceMode = false, angleMode = false;
+    const pts = [], angPts = [];
+
+    const measurementLines = [];
+    const measurementLabels = [];
+    let pendingMarkers = [];
+
+    const measurementList = document.getElementById('measurement-list');
+    const clearBtn = document.getElementById('clear-measurements');
+
+    const ui = {
+      bbox: document.getElementById('bbox-btn'),
+      wire: document.getElementById('wireframe-btn'),
+      colormap: document.getElementById('colormap-btn'),
+      slice: document.getElementById('slice-range'),
+      measure: document.getElementById('measure-btn'),
+      angle: document.getElementById('angle-btn'),
+      result: document.getElementById('result'),
+    };
+
+    function activate(btn) {
+      document.querySelectorAll('.btn').forEach((b) => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+    }
+    function show(text) {
+      ui.result.textContent = text;
+    }
+
+new STLLoader().load(
+  `/uploads/{{ filename }}`,
+  (geom) => {
+    const mat = new MeshStandardMaterial({
+      color: 0x00aaff,
+      metalness: 0.2,
+      roughness: 0.6,
+      clippingPlanes: [clipPlane],
+      clipIntersection: true,
+    });
+    mesh = new Mesh(geom, mat);
+    geom.computeBoundingBox();
+    geom.center();
+    const diag = geom.boundingBox.getSize(new Vector3()).length();
+    const fitScale = 100 / diag;
+    mesh.scale.setScalar(fitScale);
+    scene.add(mesh);
+
+    // Fix: Center camera and controls on the actual mesh
+    const box = new Box3().setFromObject(mesh);
+    const center = box.getCenter(new Vector3());
+    controls.target.copy(center);
+    controls.maxDistance = Math.max(box.getSize(new Vector3()).length() * 3, 50); // zoom out range
+    controls.minDistance = Math.max(box.getSize(new Vector3()).length() * 0.2, 1); // prevent going inside object
+
+    camera.position.copy(center).add(new Vector3(
+      0,
+      0,
+      box.getSize(new Vector3()).length() * 1.5
+    ));
+    camera.lookAt(center);
+    controls.update();
+
+    // Setup dynamic slicer range (so slider matches mesh boundaries)
+    const minY = box.min.y, maxY = box.max.y;
+    const sliceSlider = document.getElementById('slice-range');
+    sliceSlider.min = minY - 10;
+    sliceSlider.max = maxY + 10;
+    sliceSlider.value = 0;
+    sliceSlider.step = ((maxY - minY) / 100).toFixed(2);
+
+    // Save mesh material references if needed
+    meshDefaultMaterial = mesh.material;
+    if (geom.hasAttribute('color')) {
+      meshDefaultColors = Float32Array.from(geom.attributes.color.array);
+    } else {
+      meshDefaultColors = null;
+    }
+    const vc = geom.attributes.position.count;
+    let area = 0;
+    if (geom.index) {
+      const idx = geom.index.array, pos = geom.attributes.position.array;
+      for (let i = 0; i < idx.length; i += 3) {
+        const A = new Vector3().fromArray(pos, idx[i] * 3);
+        const B = new Vector3().fromArray(pos, idx[i + 1] * 3);
+        const C = new Vector3().fromArray(pos, idx[i + 2] * 3);
+        area += A.clone().sub(B).cross(A.clone().sub(C)).length() * 0.5;
+      }
+    }
+    show(`Vertices: ${vc}, Area: ${area.toFixed(2)} mm²`);
+  }
+);
+
+
+// Enable local clipping
+renderer.localClippingEnabled = true;
+
+// in your slider event
+ui.slice.oninput = (e) => {
+  if (!mesh) return;
+  clipPlane.constant = Number(e.target.value);
+  mesh.material.clippingPlanes = [clipPlane];
+  mesh.material.clipIntersection = true;
+  mesh.material.needsUpdate = true;
+};
+
+
+    clearBtn.onclick = () => {
+      measurementLines.forEach(group =>
+        group.objs.forEach(obj => scene.remove(obj))
+      );
+      measurementLines.length = 0;
+      measurementLabels.forEach(label => label.remove());
+      measurementLabels.length = 0;
+      show('All measurements cleared');
+    };
+
+    function addMeasurementLabel(type, description) {
+      const label = document.createElement('div');
+      label.textContent = `${type}: ${description}`;
+      label.classList.add('measurement-label');
+      measurementList.appendChild(label);
+      measurementLabels.push(label);
+      return label;
+    }
+
+    // Highlight measurement when its line/arc clicked
+    renderer.domElement.addEventListener('mousedown', e => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      raycaster.setFromCamera(mouse, camera);
+
+      let found = false;
+      measurementLines.forEach(group => {
+        group.objs.forEach(obj => {
+          if (obj.isLine || obj.isMesh) {
+            if (!found && raycaster.intersectObject(obj, false).length) {
+              measurementLabels.forEach(lab => lab.classList.remove('highlighted'));
+              if (group.label) group.label.classList.add('highlighted');
+              found = true;
+            }
+          }
+        });
+      });
+      if (!found) measurementLabels.forEach(lab => lab.classList.remove('highlighted'));
+    });
+
+    window.addEventListener('click', e => {
+      if ((!distanceMode && !angleMode) || !mesh) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObject(mesh, true);
+      if (!hits.length) return;
+      const P = hits[0].point.clone();
+
+      // Always make point marker (to be cleared on clear)
+        // Create point marker and store to pendingMarkers
+  const marker = new Mesh(new SphereGeometry(0.5), new MeshBasicMaterial({ color: 0xff2222 }));
+  marker.position.copy(P);
+  scene.add(marker);
+  pendingMarkers.push(marker);
+
+  if (distanceMode) {
+    pts.push(P);
+    if (pts.length === 2) {
+      const realMM = pts[0].distanceTo(pts[1]);
+
+      const display = realMM > 1000 ? (realMM / 10).toFixed(2) + ' cm' : realMM.toFixed(2) + ' mm';
+
+      const distLine = new Line(new BufferGeometry().setFromPoints(pts), new LineBasicMaterial({ color: 0x22ff22 }));
+      scene.add(distLine);
+
+      const label = addMeasurementLabel('Distance', display);
+      measurementLines.push({
+        objs: [...pendingMarkers, distLine],
+        label
+      });
+
+      distanceMode = false;
+      pts.length = 0;
+      pendingMarkers = [];
+      activate(null);
+      show(`Distance: ${display}`);
+    }
+  } else if (angleMode) {
+    angPts.push(P);
+    if (angPts.length === 3) {
+      const [A, B, C] = angPts;
+      const v1 = A.clone().sub(B);
+      const v2 = C.clone().sub(B);
+      const angle = v1.angleTo(v2) * (180 / Math.PI);
+
+      // Only draw lines from center point B to A and B to C
+      const line1 = new Line(
+        new BufferGeometry().setFromPoints([B, A]),
+        new LineBasicMaterial({ color: 0x22aaff })
+      );
+      const line2 = new Line(
+        new BufferGeometry().setFromPoints([B, C]),
+        new LineBasicMaterial({ color: 0x22aaff })
+      );
+      scene.add(line1); scene.add(line2);
+
+      // Arc symbolizing the angle at B (always inside)
+      const arcPoints = [];
+      const r = Math.min(v1.length(), v2.length()) * 0.4;
+      let theta1 = Math.atan2(v1.y, v1.x);
+      let theta2 = Math.atan2(v2.y, v2.x);
+      let delta = theta2 - theta1;
+      if (delta < 0) delta += 2 * Math.PI;
+      if (delta > Math.PI) {
+        [theta1, theta2] = [theta2, theta1];
+        delta = theta2 - theta1;
+        if (delta < 0) delta += 2 * Math.PI;
+      }
+      const segments = 32;
+      for (let s = 0; s <= segments; s++) {
+        const t = theta1 + delta * (s / segments);
+        arcPoints.push(new Vector3(Math.cos(t) * r, Math.sin(t) * r, 0).add(B));
+      }
+      const arcLine = new Line(new BufferGeometry().setFromPoints(arcPoints), new LineBasicMaterial({ color: 0xffff00 }));
+      scene.add(arcLine);
+
+      const label = addMeasurementLabel('Angle', `${angle.toFixed(2)}°`);
+      measurementLines.push({
+        objs: [...pendingMarkers, line1, line2, arcLine],
+        label
+      });
+
+      angleMode = false;
+      angPts.length = 0;
+      pendingMarkers = [];
+      activate(null);
+      show(`Angle: ${angle.toFixed(2)}°`);
+    }
+  }
+
+
+    });
+
+    ui.bbox.onclick = () => {
+      if (!mesh) return;
+      activate(ui.bbox);
+      if (boxHelper) {
+        scene.remove(boxHelper);
+        boxHelper = null;
+        show('Bounding Box OFF');
+      } else {
+        boxHelper = new BoxHelper(mesh, 0x33ff33);
+        scene.add(boxHelper);
+        const s = new Box3().setFromObject(mesh).getSize(new Vector3());
+        show(`BBox: ${s.x.toFixed(2)} × ${s.y.toFixed(2)} × ${s.z.toFixed(2)} mm`);
+      }
+    };
+    ui.wire.onclick = () => {
+      if (!mesh) return;
+      activate(ui.wire);
+      mesh.material.wireframe = !mesh.material.wireframe;
+      show(`Wireframe: ${mesh.material.wireframe ? 'On' : 'Off'}`);
+    };
+    ui.colormap.onclick = () => {
+      if (!mesh) return;
+      activate(ui.colormap);
+      if (!colorByHeightOn) {
+        if (mesh.geometry.hasAttribute('color')) {
+          meshDefaultColors = Float32Array.from(mesh.geometry.attributes.color.array);
+        } else {
+          meshDefaultColors = null;
+        }
+        meshDefaultMaterial = mesh.material;
+        const pos = mesh.geometry.attributes.position.array;
+        const count = mesh.geometry.attributes.position.count;
+        let minY = Infinity, maxY = -Infinity;
+        for (let i = 1; i < pos.length; i += 3) {
+          minY = Math.min(minY, pos[i]);
+          maxY = Math.max(maxY, pos[i]);
+        }
+        const colors = [];
+        for (let i = 0; i < count; i++) {
+          const t = (pos[i * 3 + 1] - minY) / (maxY - minY);
+          colors.push(1 - t, 0, t);
+        }
+        mesh.geometry.setAttribute('color', new Float32BufferAttribute(colors, 3));
+        mesh.material = new MeshBasicMaterial({
+          vertexColors: true,
+          clippingPlanes: [clipPlane],
+          clipIntersection: true,
+        });
+        colorByHeightOn = true;
+        show('Colored by height ON');
+      } else {
+        if (meshDefaultColors) {
+          mesh.geometry.setAttribute('color', new Float32BufferAttribute(meshDefaultColors, 3));
+        } else {
+          mesh.geometry.deleteAttribute('color');
+        }
+        mesh.material = meshDefaultMaterial;
+        colorByHeightOn = false;
+        show('Colored by height OFF');
+      }
+    };
+    ui.slice.oninput = (e) => {
+    if (!mesh) return;
+    clipPlane.constant = Number(e.target.value);
+    mesh.material.clippingPlanes = [clipPlane];
+    mesh.material.clipIntersection = true;
+    mesh.material.needsUpdate = true;
+    };
+
+    ui.measure.onclick = () => {
+      activate(ui.measure);
+      distanceMode = true;
+      angleMode = false;
+      pts.length = 0;
+      show('Click two points');
+    };
+    ui.angle.onclick = () => {
+      activate(ui.angle);
+      angleMode = true;
+      distanceMode = false;
+      angPts.length = 0;
+      show('Click three points');
+    };
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Upload STL File</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  <style>
+    html, body {
+      height: 100vh;
+      margin: 0;
+      background: #1e1e2f;
+      font-family: Arial,sans-serif;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      min-height: 500px;
+      min-width: 350px;
+    }
+    .upload-section {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100vw; height: 100vh;
+    }
+    .upload-card {
+      background: #232346;
+      border-radius: 16px;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.26);
+      padding: 40px 30px;
+      min-width: 330px;
+      max-width: 410px;
+      margin: auto;
+      text-align: center;
+    }
+    .upload-card h1 {
+      color: #fff;
+      font-size: 24px;
+      margin-bottom: 24px;
+    }
+    .upload-box {
+  width: 90%;              /* Ensures it's centered and not too wide */
+  max-width: 440px;
+  min-width: 280px;
+  border: 2px dashed #4a4a6a;
+  border-radius: 8px;
+  color: #ccc;
+  padding: 38px 20px;
+  background: #292950;
+  margin: 0 auto 18px auto; /* Center within .upload-card */
+  transition: background 0.25s, border-color 0.2s;
+  position: relative;
+  cursor: pointer;
+  font-size: 15px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+
+    .upload-box.hover {
+      background: #4753c8;
+      border-color: #5c6cef;
+      color: #fff;
+    }
+    .upload-box p { margin: 0; }
+    .upload-box input[type=file] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%; height: 100%;
+    }
+    .file-info {
+      min-height: 22px;
+      margin-bottom: 16px;
+      color: #eee;
+      font-size: 15px;
+      margin-top: 7px;
+    }
+    .btn-primary {
+      width: 100%;
+      font-size: 16px;
+      padding: 12px 0;
+      color: #fff;
+      background: #5c6cef;
+      border: none;
+      border-radius: 6px;
+      margin-top: 12px;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.22);
+      transition: background .2s;
+    }
+    .btn-primary:disabled, .btn-primary[aria-disabled=true] {
+      background: #3b3f5a;
+      color: #888;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    .btn-primary:not(:disabled):hover {
+      background: #4753c8;
+    }
+  </style>
+</head>
+<body>
+  <div class="upload-section">
+    <div class="upload-card" role="main" aria-label="STL File Upload">
+      <h1>Upload Your STL</h1>
+      <form id="upload-form" enctype="multipart/form-data" novalidate autocomplete="off">
+        <div class="upload-box" tabindex="0" aria-label="File Upload Drop Zone" id="drop-area">
+          <p id="drop-label">Drag &amp; drop your .stl file here<br />or click to browse</p>
+          <input id="file-input" name="file" type="file" accept=".stl" aria-describedby="file-info" />
+        </div>
+        <div id="file-info" class="file-info" role="alert" aria-live="polite">No file selected</div>
+        <button id="upload-btn" class="btn-primary" disabled aria-disabled="true" type="submit">View Model</button>
+      </form>
+    </div>
+  </div>
+  <script>
+    // Centered upload with no double ask, drag-and-drop or single click only
+    const fileInput = document.getElementById('file-input');
+    const uploadBox = document.getElementById('drop-area');
+    const fileInfo = document.getElementById('file-info');
+    const uploadBtn = document.getElementById('upload-btn');
+    const form = document.getElementById('upload-form');
+    let stlFile = null;
+
+    uploadBox.addEventListener('click', e => {
+      if (e.target !== fileInput) fileInput.click();
+    });
+
+    uploadBox.addEventListener('dragover', e => {
+      e.preventDefault();
+      uploadBox.classList.add('hover');
+    });
+    uploadBox.addEventListener('dragleave', e => {
+      e.preventDefault();
+      uploadBox.classList.remove('hover');
+    });
+
+    uploadBox.addEventListener('drop', e => {
+      e.preventDefault();
+      uploadBox.classList.remove('hover');
+      if (e.dataTransfer.files && e.dataTransfer.files.length === 1) {
+        // Only one file, first only
+        const file = e.dataTransfer.files[0];
+        handleSingleFile(file);
+        fileInput.files = e.dataTransfer.files;
+      }
+    });
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files && fileInput.files.length === 1) {
+        handleSingleFile(fileInput.files[0]);
+      }
+    });
+
+    function handleSingleFile(file) {
+      if (!file || !file.name.toLowerCase().endsWith('.stl')) {
+        fileInfo.textContent = "Please select a valid .stl file.";
+        setUploadButton(false);
+        stlFile = null;
+      } else {
+        fileInfo.textContent = `Selected: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`;
+        setUploadButton(true);
+        stlFile = file;
+      }
+    }
+
+    function setUploadButton(enabled) {
+      uploadBtn.disabled = !enabled;
+      uploadBtn.setAttribute('aria-disabled', !enabled);
+    }
+
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      if (!stlFile) {
+        fileInfo.textContent = "Please select a valid .stl file before uploading.";
+        return;
+      }
+      const formData = new FormData();
+      formData.append('file', stlFile);
+
+      uploadBtn.disabled = true;
+      uploadBtn.setAttribute('aria-disabled', true);
+      uploadBtn.textContent = "Uploading...";
+
+      fetch("/", { method: "POST", body: formData })
+        .then(res => {
+          if (res.redirected) {
+            window.location.href = res.url;
+          } else {
+            res.text().then(txt => {
+              fileInfo.textContent = txt;
+              setUploadButton(false);
+              uploadBtn.textContent = "View Model";
+            });
+          }
+        })
+        .catch(() => {
+          fileInfo.textContent = "Upload failed. Please try again.";
+          setUploadButton(false);
+          uploadBtn.textContent = "View Model";
+        });
+    });
+  </script>
+</body>
+</html>
